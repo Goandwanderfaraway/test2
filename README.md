@@ -1,907 +1,498 @@
-# Contents
+## SqueezeNet简介
 
-- [SqueezeNet Description](#squeezenet-description)
-- [Model Architecture](#model-architecture)
-- [Dataset](#dataset)
-- [Features](#features)
-    - [Mixed Precision](#mixed-precision)
-- [Environment Requirements](#environment-requirements)
-- [Quick Start](#quick-start)
-- [Script Description](#script-description)
-    - [Script and Sample Code](#script-and-sample-code)
-    - [Script Parameters](#script-parameters)
-    - [Training Process](#training-process)
-    - [Evaluation Process](#evaluation-process)
-    - [Inference Process](#inference-process)
-            - [Export MindIR](#export-mindir)
-            - [Infer on Ascend310](#infer-on-ascend310)
-            - [result](#result)
-- [Model Description](#model-description)
-    - [Performance](#performance)
-        - [Evaluation Performance](#evaluation-performance)
-        - [Inference Performance](#inference-performance)
-        - [310 Inference Performance](#310-inference-performance)
-    - [How to use](#how-to-use)
-        - [Inference](#inference)
-        - [Continue Training on the Pretrained Model](#continue-training-on-the-pretrained-model)
-        - [Transfer Learning](#transfer-learning)
-            - [Dataset Process](#dataset-process1)
-            - [Quick Start](#quick_start1)
-            - [Training Process](#training-process1)
-            - [Evaluation Process](#evaluation-process1)
-            - [Parameters Setting](#parameters_setting)
-- [Description of Random Situation](#description-of-random-situation)
-- [ModelZoo Homepage](#modelzoo-homepage)
 
-# [SqueezeNet Description](#contents)
+### 一.SqueezeNet实现轻量化的设计原则
 
-SqueezeNet is a lightweight and efficient CNN model proposed by Han et al., published in ICLR-2017. SqueezeNet has 50x fewer parameters than AlexNet, but the model performance (accuracy) is close to AlexNet.
+（1）对于给定一定数量的卷积操作，大多数情况下使用1×1卷积代替3×3卷积,可以使网络减少9倍以上的参数量。
 
-These are examples of training SqueezeNet/SqueezeNet_Residual with CIFAR-10/ImageNet dataset in MindSpore. SqueezeNet_Residual adds residual operation on the basis of SqueezeNet, which can improve the accuracy of the model without increasing the amount of parameters.
+（2）减少3×3卷积核的输入通道数量。考虑一个完全由3x3滤波器组成的卷积层。该层的参数量可通过如下公式计算：(number of input channels)×(number of filters)×(3×3)。所以，为了在CNN中保持一个小的参数总数，不仅要减少3x3滤波器的数量，而且要减少3x3滤波器输入通道的数量。
 
-[Paper](https://arxiv.org/abs/1602.07360):  Forrest N. Iandola and Song Han and Matthew W. Moskewicz and Khalid Ashraf and William J. Dally and Kurt Keutzer. "SqueezeNet: AlexNet-level accuracy with 50x fewer parameters and <0.5MB model size"
+（3）在网络的后期向下采样，以便卷积层有较大的激活映射。在卷积网络中，每个卷积层产生一个输出激活映射，其空间分辨率至少为1x1，而且通常要比1x1大得多。激活映射的宽和高通常取决于：（1）输入数据的大小（2）在CNN网络的哪一层进行下采样。在其他条件相同的情况下，大的激活映射(由于延迟下采样)可以导致更高的分类精度。
 
-# [Model Architecture](#contents)
+### 二.Squeezenet网络结构
 
-SqueezeNet is composed of fire modules. A fire module mainly includes two layers of convolution operations: one is the squeeze layer using a **1x1 convolution** kernel; the other is an expand layer using a mixture of **1x1** and **3x3 convolution** kernels.
+#### 2.1 Fire模块
+Fire Module由squeeze层和expand层组成。squeeze层只包含1×1卷积，expand进行1×1和3×3的混合卷积操作。在Fire Module中主要以1×1卷积为主。s1x1、e1x1和e3x3是Fire模块的三个超参数，它们分别表示squeeze层1x1卷积的数目，expand层1x1卷积的数目和expand层3x3卷积的数目，当我们使用Fire模块时，我们将s1x1设置为小于(e1x1+e3x3)，因此squeeze层有助于限制3x3滤波器的输入通道数量。
+<div align=center>
+   <img src="https://636c-cloud1-3gypehkveda97589-1311160254.tcb.qcloud.la/squeezenet%E5%9B%BE%E7%89%87/img1.jpg?sign=76d051254ce0a43b473f0767193d22c3&t=1667639667" width=80% />
+</div>
 
-# [Dataset](#contents)
+#### 2.2 SqueezeNet的架构
 
-Dataset used: [CIFAR-10](<http://www.cs.toronto.edu/~kriz/cifar.html>)
+SqueezeNet整体网络结构图如下所示，其中maxpool(stride=2)分别设置在conv1/fire4/fire8/conv10之后，
+下图所示，左边是SqueezeNet，中间是带简单旁路的SqueezeNet,右边是带复杂旁路的SqueezeNet
 
-- Dataset size：175M，60,000 32*32 colorful images in 10 classes
-    - Train：146M，50,000 images
-    - Test：29M，10,000 images
-- Data format：binary files
-    - Note：Data will be processed in src/dataset.py
+<div align=center>
+   <img src="https://636c-cloud1-3gypehkveda97589-1311160254.tcb.qcloud.la/squeezenet%E5%9B%BE%E7%89%87/img3.jpg?sign=bffb5e98f364eddff5f1b5f2a18a576d&t=1667639643" width=60%  />
+</div>
 
-Dataset used: [ImageNet2012](http://www.image-net.org/)
+下图给出了模型每一层的具体参数
 
-- Dataset size: 125G, 1250k colorful images in 1000 classes
-    - Train: 120G, 1200k images
-    - Test: 5G, 50k images
-- Data format: RGB images.
-    - Note: Data will be processed in src/dataset.py
+<div align=center>
+   <img src="https://636c-cloud1-3gypehkveda97589-1311160254.tcb.qcloud.la/squeezenet%E5%9B%BE%E7%89%87/img2.jpg?sign=0d226f4a60e5a751c9b281b00490e2a1&t=1667639656" width=60%  />
+</div>
 
-# [Features](#contents)
+#### 2.3 SqueezeNet的检测精度
+基于SVD的方法能够将预训练的AlexNet模型压缩5倍，同时将top-1精度降低到56.0%。网络剪枝在保持ImageNettop-1精度为57.2%，top-5精度为80.3%的基础上，模型尺寸减少了9倍。深度压缩在保持baseline精度水平的同时，模型尺寸减少了35倍。而SqueezeNet模型尺寸比AlexNet缩小了50倍，同时达到或超过了AlexNet的top-1和top-5的精度。
 
-## Mixed Precision
+<div align=center>
+   <img src="https://636c-cloud1-3gypehkveda97589-1311160254.tcb.qcloud.la/squeezenet%E5%9B%BE%E7%89%87/img4.png?sign=0c59b98a5432e5993b8a277fe563dcb6&t=1667639698" width=70%  />
+</div>
 
-The [mixed precision](https://mindspore.cn/tutorials/experts/zh-CN/r1.9/others/mixed_precision.html) training method accelerates the deep learning neural network training process by using both the single-precision and half-precision data formats, and maintains the network precision achieved by the single-precision training at the same time. Mixed precision training can accelerate the computation process, reduce memory usage, and enable a larger model or batch size to be trained on specific hardware.
-For FP16 operators, if the input data type is FP32, the backend of MindSpore will automatically handle it with reduced precision. Users could check the reduced-precision operators by enabling INFO log and then searching ‘reduce precision’.
 
-# [Environment Requirements](#contents)
 
-- Hardware（Ascend/CPU）
-    - Prepare hardware environment with Ascend processor. Squeezenet training on GPU performs is not good now, and it is still in research. See [squeezenet in research](https://gitee.com/mindspore/models/tree/r1.9/official/cv/squeezenet) to get up-to-date details.
-- Framework
-    - [MindSpore](https://www.mindspore.cn/install/en)
-- For more information, please check the resources below：
-    - [MindSpore Tutorials](https://www.mindspore.cn/tutorials/en/r1.9/index.html)
-    - [MindSpore Python API](https://www.mindspore.cn/docs/en/r1.9/index.html)
+除此之外，我们将压缩比SR定义为squeeze层中滤波器的数量与expand层中滤波器的数量之比，改变expand层当中两种滤波器的比例，可以得到不同大小和精度的模型
 
-# [Quick Start](#contents)
+<div align=center>
+   <img src="https://636c-cloud1-3gypehkveda97589-1311160254.tcb.qcloud.la/squeezenet%E5%9B%BE%E7%89%87/img5.png?sign=15c3321a619977839853137431ab6ec2&t=1667639684" width=70%  />
+</div>
 
-After installing MindSpore via the official website, you can start training and evaluation as follows:
+### 下载并处理数据集
 
-- running on Ascend
+下面示例中用到的CIFAER10数据集是由10类3×32×32的彩色图片组成，训练数据集包含50000张图片，测试数据集包含10000张图片。
+<div align=center>
+   <img src="https://636c-cloud1-3gypehkveda97589-1311160254.tcb.qcloud.la/squeezenet%E5%9B%BE%E7%89%87/cifar10.jpg?sign=caca5e022be267f04eb3b6c64d54c281&t=1667639675" width=60% />
+</div>
 
-  ```bash
-  run squeezenet_residual as example
-  # distributed training
-  Usage: bash scripts/run_distribute_train.sh [squeezenet|squeezenet_residual] [cifar10|imagenet] [RANK_TABLE_FILE] [DATA_PATH] [PRETRAINED_CKPT_PATH](optional)
-  # example: bash scripts/run_distribute_train.sh squeezenet_residual imagenet ~/hccl_8p.json /home/DataSet/ImageNet_Original/train
-  # example: bash scripts/run_distribute_train.sh squeezenet_residual cifar10 ~/hccl_8p.json /home/DataSet/cifar10/cifar-10-batches-bin
-
-  # standalone training
-  Usage: bash scripts/run_standalone_train.sh [squeezenet|squeezenet_residual] [cifar10|imagenet] [DEVICE_ID] [DATA_PATH] [PRETRAINED_CKPT_PATH](optional)
-  # example: bash scripts/run_standalone_train.sh squeezenet_residual imagenet 0 /home/DataSet/ImageNet_Original/train
-  # example: bash scripts/run_standalone_train.sh squeezenet_residual cifar10 0 /home/DataSet/cifar10/cifar-10-batches-bin
-
-  # run evaluation example
-  Usage: bash scripts/run_eval.sh [squeezenet|squeezenet_residual] [cifar10|imagenet] [DEVICE_ID] [DATA_PATH] [CHECKPOINT_PATH]
-  # example bash scripts/run_eval.sh squeezenet_residual cifar10 0 /home/DataSet/cifar10/cifar-10-verify-bin /home/model/squeezenet/ckpt/squeezenet_residual_cifar10-120_1562.ckpt
-  # example bash scripts/run_eval.sh squeezenet_residual imagenet 0 /home/DataSet/ImageNet_Original/validation_preprocess /home/model/squeezenet/ckpt/squeezenet_residual_imagenet-300_5004.ckpt
-  ```
-
-- running on GPU
-
-  ```bash
-  # distributed training
-  Usage: bash scripts/run_distribute_train_gpu.sh [squeezenet|squeezenet_residual] [cifar10|imagenet] [DATASET_PATH] [PRETRAINED_CKPT_PATH](optional)
-
-  # standalone training
-  Usage: bash scripts/run_standalone_train_gpu.sh [squeezenet|squeezenet_residual] [cifar10|imagenet] [DEVICE_ID] [DATA_PATH] [PRETRAINED_CKPT_PATH](optional)
-
-  # run evaluation example
-  Usage: bash scripts/run_eval_gpu.sh [squeezenet|squeezenet_residual] [cifar10|imagenet] [DEVICE_ID] [DATASET_PATH] [CHECKPOINT_PATH]
-  ```
-
-- running on CPU
-
-  ```bash
-  # standalone training
-  Usage: bash scripts/run_train_cpu.sh [squeezenet|squeezenet_residual] [cifar10|imagenet] [DATA_PATH] [PRETRAINED_CKPT_PATH](optional)
-
-  # run evaluation example
-  Usage: bash scripts/run_eval.sh [squeezenet|squeezenet_residual] [cifar10|imagenet] [DATA_PATH] [CHECKPOINT_PATH]
-  ```
-
-   If you want to run in modelarts, please check the official documentation of [modelarts](https://support.huaweicloud.com/modelarts/), and you can start training and evaluation as follows:
-
-```ModelArts
-# run distributed training on modelarts example
-# (1) First, Perform a or b.
-#       a. Set "enable_modelarts=True" on yaml file.
-#          Set other parameters on yaml file you need.
-#       b. Add "enable_modelarts=True" on the website UI interface.
-#          Add other parameters on the website UI interface.
-# (2) Set the config directory to "config_path=/The path of config in S3/"
-# (3) Set the Dataset directory in config file.
-# (4) Set the code directory to "/path/squeezenet" on the website UI interface.
-# (5) Set the startup file to "train.py" on the website UI interface.
-# (6) Set the "Dataset path" and "Output file path" and "Job log path" to your path on the website UI interface.
-# (7) Create your job.
-
-# run evaluation on modelarts example
-# (1) Copy or upload your trained model to S3 bucket.
-# (2) Perform a or b.
-#       a. Set "enable_modelarts=True" on yaml file.
-#          Set "checkpoint_file_path='/cache/checkpoint_path/model.ckpt'" on yaml file.
-#          Set "checkpoint_url=/The path of checkpoint in S3/" on yaml file.
-#       b. Add "enable_modelarts=True" on the website UI interface.
-#          Add "checkpoint_file_path='/cache/checkpoint_path/model.ckpt'" on the website UI interface.
-#          Add "checkpoint_url=/The path of checkpoint in S3/" on the website UI interface.
-# (3) Set the config directory to "config_path=/The path of config in S3/"
-# (4) Set the Dataset directory in config file.
-# (5) Set the code directory to "/path/squeezenet" on the website UI interface.
-# (6) Set the startup file to "eval.py" on the website UI interface.
-# (7) Set the "Dataset path" and "Output file path" and "Job log path" to your path on the website UI interface.
-# (8) Create your job.
-```
-
-# [Script Description](#contents)
-
-## [Script and Sample Code](#contents)
-
-```text
+数据集结构如下图所示：
 .
-└── squeezenet
-  ├── README.md
-  ├── ascend310_infer                        # application for 310 inference
-  ├── scripts
-      ├── run_distribute_train.sh            # launch ascend distributed training(8 pcs)
-      ├── run_distribute_train_gpu.sh        # launch GPU distributed training(8 pcs)
-      ├── run_standalone_train.sh            # launch ascend standalone training(1 pcs)
-      ├── run_standalone_train_gpu.sh        # launch GPU standalone training(1 pcs)
-      ├── run_train_cpu.sh                   # launch CPU training
-      ├── run_eval.sh                        # launch ascend evaluation
-      ├── run_eval_gpu.sh                    # launch GPU evaluation
-      ├── run_eval_cpu.sh                    # launch CPU evaluation
-      ├── run_infer_310.sh                   # shell script for 310 infer
-  ├── src
-      ├── dataset.py                         # data preprocessing
-      ├── CrossEntropySmooth.py              # loss definition for ImageNet dataset
-      ├── lr_generator.py                    # generate learning rate for each step
-      ├── data_split.py                      # script for splitting transfer learning dataset (cpu)
-      └── squeezenet.py                      # squeezenet architecture, including squeezenet and squeezenet_residual
-  ├── model_utils
-  │   ├── device_adapter.py                  # device adapter
-  │   ├── local_adapter.py                   # local adapter
-  │   ├── moxing_adapter.py                  # moxing adapter
-  │   └── config.py                          # parameter analysis
-  ├── squeezenet_cifar10_config.yaml            # parameter configuration
-  ├── squeezenet_imagenet_config.yaml           # parameter configuration
-  ├── squeezenet_residual_cifar10_config.yaml   # parameter configuration
-  ├── squeezenet_residual_imagenet_config.yaml  # parameter configuration
-  ├── train.py                                  # train net
-  ├── eval.py                                   # eval net
-  ├── finetune.py                               # transfer train and test (cpu)
-  ├── quick_start.py                            # quick start demo (cpu)
-  ├── export.py                                 # export checkpoint files into geir/onnx
-  ├── postprocess.py                         # postprocess script
-  ├── preprocess.py                          # preprocess script
-  ├── requirements.txt
-  └── mindspore_hub_conf.py                  # mindspore hub interface
-```
+└── cifar-10-batches-py
+     ├── data_batch_1
+     ├── data_batch_2
+     ├── data_batch_3
+     ├── data_batch_4
+     ├── data_batch_5
+     ├── test_batch
+     ├── readme.html
+     └── batches.meta
 
-## [Script Parameters](#contents)
 
-Parameters for both training and evaluation can be set in *.yaml
-
-- config for SqueezeNet, CIFAR-10 dataset
-
-  ```py
-  "class_num": 10,                  # dataset class num
-  "batch_size": 32,                 # Batch_size for training, evaluation and export. If running distributed on gpu, divide this value by device_num.
-  "loss_scale": 1024,               # loss scale
-  "momentum": 0.9,                  # momentum
-  "weight_decay": 1e-4,             # weight decay
-  "epoch_size": 120,                # only valid for taining, which is always 1 for inference
-  "pretrain_epoch_size": 0,         # epoch size that model has been trained before loading pretrained checkpoint, actual training epoch size is equal to epoch_size minus pretrain_epoch_size
-  "save_checkpoint": True,          # whether save checkpoint or not
-  "save_checkpoint_epochs": 1,      # the epoch interval between two checkpoints. By default, the last checkpoint will be saved after the last step
-  "keep_checkpoint_max": 10,        # only keep the last keep_checkpoint_max checkpoint
-  "save_checkpoint_path": "./",     # path to save checkpoint
-  "warmup_epochs": 5,               # number of warmup epoch
-  "lr_decay_mode": "poly"           # decay mode for generating learning rate
-  "lr_init": 0,                     # initial learning rate
-  "lr_end": 0,                      # final learning rate
-  "lr_max": 0.01,                   # maximum learning rate
-  ```
-
-- config for SqueezeNet, ImageNet dataset
-
-  ```py
-  "class_num": 1000,                # dataset class num
-  "batch_size": 32,                 # Batch_size for training, evaluation and export
-  "loss_scale": 1024,               # loss scale
-  "momentum": 0.9,                  # momentum
-  "weight_decay": 7e-5,             # weight decay
-  "epoch_size": 200,                # only valid for taining, which is always 1 for inference
-  "pretrain_epoch_size": 0,         # epoch size that model has been trained before loading pretrained checkpoint, actual training epoch size is equal to epoch_size minus pretrain_epoch_size
-  "save_checkpoint": True,          # whether save checkpoint or not
-  "save_checkpoint_epochs": 1,      # the epoch interval between two checkpoints. By default, the last checkpoint will be saved after the last step
-  "keep_checkpoint_max": 10,        # only keep the last keep_checkpoint_max checkpoint
-  "save_checkpoint_path": "./",     # path to save checkpoint
-  "warmup_epochs": 0,               # number of warmup epoch
-  "lr_decay_mode": "poly"           # decay mode for generating learning rate
-  "use_label_smooth": True,         # label smooth
-  "label_smooth_factor": 0.1,       # label smooth factor
-  "lr_init": 0,                     # initial learning rate
-  "lr_end": 0,                      # final learning rate
-  "lr_max": 0.01,                   # maximum learning rate
-  ```
-
-- config for SqueezeNet_Residual, CIFAR-10 dataset
-
-  ```py
-  "class_num": 10,                  # dataset class num
-  "batch_size": 32,                 # Batch_size for training, evaluation and export. If running distributed on gpu, divide this value by device_num.
-  "loss_scale": 1024,               # loss scale
-  "momentum": 0.9,                  # momentum
-  "weight_decay": 1e-4,             # weight decay
-  "epoch_size": 150,                # only valid for taining, which is always 1 for inference
-  "pretrain_epoch_size": 0,         # epoch size that model has been trained before loading pretrained checkpoint, actual training epoch size is equal to epoch_size minus pretrain_epoch_size
-  "save_checkpoint": True,          # whether save checkpoint or not
-  "save_checkpoint_epochs": 1,      # the epoch interval between two checkpoints. By default, the last checkpoint will be saved after the last step
-  "keep_checkpoint_max": 10,        # only keep the last keep_checkpoint_max checkpoint
-  "save_checkpoint_path": "./",     # path to save checkpoint
-  "warmup_epochs": 5,               # number of warmup epoch
-  "lr_decay_mode": "linear"         # decay mode for generating learning rate
-  "lr_init": 0,                     # initial learning rate
-  "lr_end": 0,                      # final learning rate
-  "lr_max": 0.01,                   # maximum learning rate
-  ```
-
-- config for SqueezeNet_Residual, ImageNet dataset
-
-  ```py
-  "class_num": 1000,                # dataset class num
-  "batch_size": 32,                 # Batch_size for training, evaluation and export
-  "loss_scale": 1024,               # loss scale
-  "momentum": 0.9,                  # momentum
-  "weight_decay": 7e-5,             # weight decay
-  "epoch_size": 300,                # only valid for taining, which is always 1 for inference
-  "pretrain_epoch_size": 0,         # epoch size that model has been trained before loading pretrained checkpoint, actual training epoch size is equal to epoch_size minus pretrain_epoch_size
-  "save_checkpoint": True,          # whether save checkpoint or not
-  "save_checkpoint_epochs": 1,      # the epoch interval between two checkpoints. By default, the last checkpoint will be saved after the last step
-  "keep_checkpoint_max": 10,        # only keep the last keep_checkpoint_max checkpoint
-  "save_checkpoint_path": "./",     # path to save checkpoint
-  "warmup_epochs": 0,               # number of warmup epoch
-  "lr_decay_mode": "cosine"         # decay mode for generating learning rate
-  "use_label_smooth": True,         # label smooth
-  "label_smooth_factor": 0.1,       # label smooth factor
-  "lr_init": 0,                     # initial learning rate
-  "lr_end": 0,                      # final learning rate
-  "lr_max": 0.01,                   # maximum learning rate
-  ```
-
-- config for SqueezeNet, pretrained with ImageNet dataset, finetune with flower_dataset
-
-  ```py
-  "class_num": 5,                # dataset class num
-  "batch_size": 256,                # Batch_size for training, evaluation and export
-  "loss_scale": 1024,               # loss scale
-  "momentum": 0.9,                  # momentum
-  "weight_decay": 7e-5,             # weight decay
-  "epoch_size": 200,                # only valid for taining, which is always 1 for inference
-  "pretrain_epoch_size": 0,         # epoch size that model has been trained before loading pretrained checkpoint, actual training epoch size is equal to epoch_size minus pretrain_epoch_size
-  "save_checkpoint": True,          # whether save checkpoint or not
-  "save_checkpoint_epochs": 1,      # the epoch interval between two checkpoints. By default, the last checkpoint will be saved after the last step
-  "keep_checkpoint_max": 10,        # only keep the last keep_checkpoint_max checkpoint
-  "save_checkpoint_path": "./",     # path to save checkpoint
-  "warmup_epochs": 0,               # number of warmup epoch
-  "lr_decay_mode": "poly"           # decay mode for generating learning rate
-  "use_label_smooth": True,         # label smooth
-  "label_smooth_factor": 0.1,       # label smooth factor
-  "lr_init": 0,                     # initial learning rate
-  "lr_end": 0,                      # final learning rate
-  "lr_max": 0.01,                   # maximum learning rate
-  ```
-
-For more configuration details, please refer the file `*.yaml`.
-
-## [Training Process](#contents)
-
-### Usage
-
-#### Running on Ascend
-
-  ```shell
-  # distributed training
-  Usage: bash scripts/run_distribute_train.sh [squeezenet|squeezenet_residual] [cifar10|imagenet] [RANK_TABLE_FILE] [DATA_PATH] [PRETRAINED_CKPT_PATH](optional)
-  # example: bash scripts/run_distribute_train.sh squeezenet_residual imagenet ~/hccl_8p.json /home/DataSet/ImageNet_Original/train
-  # example: bash scripts/run_distribute_train.sh squeezenet_residual cifar10 ~/hccl_8p.json /home/DataSet/cifar10/cifar-10-batches-bin
-
-  # standalone training
-  Usage: bash scripts/run_standalone_train.sh [squeezenet|squeezenet_residual] [cifar10|imagenet] [DEVICE_ID] [DATA_PATH] [PRETRAINED_CKPT_PATH](optional)
-  # example: bash scripts/run_standalone_train.sh squeezenet_residual imagenet 0 /home/DataSet/ImageNet_Original/train
-  # example: bash scripts/run_standalone_train.sh squeezenet_residual cifar10 0 /home/DataSet/cifar10/cifar-10-batches-bin
-  ```
-
-For distributed training, a hccl configuration file with JSON format needs to be created in advance.
-
-Please follow the instructions in the link [hccl_tools](https://gitee.com/mindspore/models/tree/r1.9/utils/hccl_tools).
-
-Training result will be stored in the example path, whose folder name begins with "train" or "train_parallel". Under this, you can find checkpoint file together with result like the followings in log.
-
-### Result
-
-- Training SqueezeNet with CIFAR-10 dataset
-
-```log
-# standalone training result
-epoch: 1 step 1562, loss is 1.7103254795074463
-epoch: 2 step 1562, loss is 2.06101131439209
-epoch: 3 step 1562, loss is 1.5594401359558105
-epoch: 4 step 1562, loss is 1.4127278327941895
-epoch: 5 step 1562, loss is 1.2140142917633057
-...
-```
-
-- Training SqueezeNet with ImageNet dataset
-
-```log
-# distribute training result(8 pcs)
-epoch: 1 step 5004, loss is 5.716324329376221
-epoch: 2 step 5004, loss is 5.350603103637695
-epoch: 3 step 5004, loss is 4.580031394958496
-epoch: 4 step 5004, loss is 4.784664154052734
-epoch: 5 step 5004, loss is 4.136358261108398
-...
-```
-
-- Training SqueezeNet_Residual with CIFAR-10 dataset
-
-```log
-# standalone training result
-epoch: 1 step 1562, loss is 2.298271656036377
-epoch: 2 step 1562, loss is 2.2728664875030518
-epoch: 3 step 1562, loss is 1.9493038654327393
-epoch: 4 step 1562, loss is 1.7553865909576416
-epoch: 5 step 1562, loss is 1.3370063304901123
-...
-```
-
-- Training SqueezeNet_Residual with ImageNet dataset
-
-```log
-# distribute training result(8 pcs)
-epoch: 1 step 5004, loss is 6.802495002746582
-epoch: 2 step 5004, loss is 6.386072158813477
-epoch: 3 step 5004, loss is 5.513605117797852
-epoch: 4 step 5004, loss is 5.312961101531982
-epoch: 5 step 5004, loss is 4.888848304748535
-...
-```
-
-## [Evaluation Process](#contents)
-
-### Usage
-
-#### Running on Ascend
-
-```shell
-# evaluation
-Usage: bash scripts/run_eval.sh [squeezenet|squeezenet_residual] [cifar10|imagenet] [DEVICE_ID] [DATA_PATH] [CHECKPOINT_PATH]
-# example bash scripts/run_eval.sh squeezenet_residual cifar10 0 /home/DataSet/cifar10/cifar-10-verify-bin /home/model/squeezenet/ckpt/squeezenet_residual_cifar10-120_1562.ckpt
-# example bash scripts/run_eval.sh squeezenet_residual imagenet 0 /home/DataSet/ImageNet_Original/validation_preprocess /home/model/squeezenet/ckpt/squeezenet_residual_imagenet-300_5004.ckpt
-```
-
-checkpoint can be produced in training process.
-
-### Result
-
-Evaluation result will be stored in the example path, whose folder name is "eval". Under this, you can find result like the followings in log.
-
-- Evaluating SqueezeNet with CIFAR-10 dataset
-
-```log
-result: {'top_1_accuracy': 0.8896233974358975, 'top_5_accuracy': 0.9965945512820513}
-```
-
-- Evaluating SqueezeNet with ImageNet dataset
-
-```log
-result: {'top_1_accuracy': 0.5851472471190781, 'top_5_accuracy': 0.8105393725992317}
-```
-
-- Evaluating SqueezeNet_Residual with CIFAR-10 dataset
-
-```log
-result: {'top_1_accuracy': 0.9077524038461539, 'top_5_accuracy': 0.9969951923076923}
-```
-
-- Evaluating SqueezeNet_Residual with ImageNet dataset
-
-```log
-result: {'top_1_accuracy': 0.6094950384122919, 'top_5_accuracy': 0.826324423815621}
-```
-
-## [Inference process](#contents)
-
-### Export MindIR
-
-Export MindIR on local
 
 ```python
-python export.py --checkpoint_file_path [CKPT_PATH] --batch_size [BATCH_SIZE] --net_name [NET] --dataset [DATASET] --file_format [EXPORT_FORMAT] --config_path [CONFIG_PATH]
+# ASCEND 加速
+ms.set_context(mode=ms.GRAPH_MODE, device_target="Ascend")
+# 数据集读取
+!pip install mindvision
+from mindvision.classification.dataset import Cifar10
+import mindspore.dataset.vision as C
+trans = [
+            C.Resize((224, 224)),
+            C.Rescale(1.0 / 255.0, 0.0),
+            C.Normalize([0.4914, 0.4822, 0.4465], [0.2023, 0.1994, 0.2010]),
+            C.HWC2CHW()
+        ]
+# 数据集根目录
+data_dir = "./CIFAR10"
+
+# 下载解压并加载CIFAR-10训练数据集
+download_train = Cifar10(path=data_dir, transform=trans,split="train", batch_size=32, repeat_num=1, shuffle=True, resize=224, download=True)
+dataset_train = download_train.run()
+
+step_size = dataset_train.get_dataset_size()#TODO
+
+# 下载解压并加载CIFAR-10测试数据集
+# dataset_val = Cifar10(path=data_dir, split='test', batch_size=6, resize=32, download=True)
+download_eval = Cifar10(path=data_dir,transform=trans,split="test", batch_size=32, resize=224, download=True)
+dataset_eval = download_eval.run()
+
 ```
 
-The checkpoint_file_path parameter is required,
-`BATCH_SIZE` can only be set to 1
-`NET` should be in ["squeezenet", "squeezenet_residual"]
-`DATASET` should be in ["cifar10", "imagenet"]
-`EXPORT_FORMAT` should be in ["AIR", "MINDIR"]
+#### 可视化数据集
+运行以下代码观察数据增强后的图片。可以发现图片经过了旋转处理，并且图片的shape也已经转换为待输入网络的（N，C，H，W）格式，其中N代表样本数量，C代表图片通道，H和W代表图片的高和宽。
 
-Export on ModelArts (If you want to run in modelarts, please check the official documentation of [modelarts](https://support.huaweicloud.com/modelarts/), and you can start as follows)
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+#可视化数据集
+def visual_input_data(dataset):
+    data = next(dataset.create_dict_iterator())
+    images = data["image"]
+    labels = data["label"]
+    print("Tensor of image", images.shape)
+    print("Labels:", labels)
+    plt.figure(figsize=(15, 15))
+    for i in range(0,32):
+        # get the image and its corresponding label
+        data_image = images[i].asnumpy()
+        # data_label = labels[i]
+        # process images for display
+        data_image = np.transpose(data_image, (1, 2, 0))
+        mean = np.array([0.485, 0.456, 0.406])
+        std = np.array([0.229, 0.224, 0.225])
+        data_image = std * data_image + mean
+        data_image = np.clip(data_image, 0, 1)
+        # display image
+        plt.subplot(8, 8, i+1)
+        plt.imshow(data_image)
+        # plt.title(class_name[int(labels[i].asnumpy())], fontsize=10)
+        plt.axis("off")
 
-```ModelArts
-# Export on ModelArts
-# (1) Perform a or b.
-#       a. Set "enable_modelarts=True" on default_config.yaml file.
-#          Set "checkpoint_file_path='/cache/checkpoint_path/model.ckpt'" on default_config.yaml file.
-#          Set "checkpoint_url='s3://dir_to_trained_ckpt/'" on default_config.yaml file.
-#          Set "file_name='./squeezenet'" on default_config.yaml file.
-#          Set "file_format='MINDIR'" on default_config.yaml file.
-#          Set other parameters on default_config.yaml file you need.
-#       b. Add "enable_modelarts=True" on the website UI interface.
-#          Add "checkpoint_file_path='/cache/checkpoint_path/model.ckpt'" on the website UI interface.
-#          Add "checkpoint_url='s3://dir_to_trained_ckpt/'" on the website UI interface.
-#          Add "file_name='./squeezenet'" on the website UI interface.
-#          Add "file_format='MINDIR'" on the website UI interface.
-#          Add other parameters on the website UI interface.
-# (2) Set the config_path="/path/yaml file" on the website UI interface.
-# (3) Set the code directory to "/path/squeezenet" on the website UI interface.
-# (4) Set the startup file to "export.py" on the website UI interface.
-# (5) Set the "Output file path" and "Job log path" to your path on the website UI interface.
-# (6) Create your job.
+    plt.show()
+
+visual_input_data(dataset_train)
 ```
 
-### Infer on Ascend310
+### 构建Fire模块
 
-Before performing inference, the mindir file must be exported by `export.py` script. We only provide an example of inference using MINDIR model.
+在SqueezeNet中，Fire是实现该网络模型参数量少的关键所在，该模块主要包含了squeeze层和expand层，在squeeze层中只包含了1×1的滤波器，而在expand层中包含了1×1和3×3的滤波器，正是由于1×1滤波器的使用，使得该网络的参数量大幅度的降低，而下面的Fire模块一共有四个参数，第一个参数是通道数，第二个参数是squeeze层的1×1滤波器的数量，第三个参数是expand层中1×1滤波器的数量，最后一个参数是expand层3×3滤波器的数量，ReLU用于squeeze和expand层的激活。
 
-```shell
-# Ascend310 inference
-bash run_infer_310.sh [MINDIR_PATH] [DATASET] [DATA_PATH] [LABEL_PATH] [DEVICE_ID]
+```python
+class Fire(nn.Cell):
+    """
+    Fire network definition.
+    """
+    def __init__(self, inplanes, squeeze_planes, expand1x1_planes,
+                 expand3x3_planes):
+        super(Fire, self).__init__()
+        self.inplanes = inplanes
+        self.squeeze = nn.Conv2d(inplanes,
+                                 squeeze_planes,
+                                 kernel_size=1,
+                                 has_bias=True)
+        self.squeeze_activation = nn.ReLU()
+        self.expand1x1 = nn.Conv2d(squeeze_planes,
+                                   expand1x1_planes,
+                                   kernel_size=1,
+                                   has_bias=True)
+        self.expand1x1_activation = nn.ReLU()
+        self.expand3x3 = nn.Conv2d(squeeze_planes,
+                                   expand3x3_planes,
+                                   kernel_size=3,
+                                   pad_mode='same',
+                                   has_bias=True)
+        self.expand3x3_activation = nn.ReLU()
+        self.concat = P.Concat(axis=1)
+
+    def construct(self, x):
+        x = self.squeeze_activation(self.squeeze(x))
+        return self.concat((self.expand1x1_activation(self.expand1x1(x)),
+                            self.expand3x3_activation(self.expand3x3(x))))
 ```
 
-- `DATASET` should be in ["imagenet", "cifar10"]. If the DATASET is cifar10, you don't need to set LABEL_FILE.
-- `LABEL_PATH` label.txt path, LABEL_FILE is only useful for imagenet. Write a py script to sort the category under the dataset, map the file names under the categories and category sort values,Such as[file name : sort value], and write the mapping results to the labe.txt file.
-- `DEVICE_ID` is optional, default value is 0.
+### 构建SqueezeNet网络模型
 
-### result
+SqueezeNet主要由Fire模块组成，中间也有一些maxpool和conv层，使用该模型时，直接将数据集中的类型数量作为参数输入即可，例如net = SqueezeNet(10)就创建好一个用于10分类的SqueezeNet模型
 
-Inference result is saved in current path, you can find result like this in acc.log file.
+```python
+class SqueezeNet(nn.Cell):
+    r"""SqueezeNet model architecture from the `"SqueezeNet: AlexNet-level
+    accuracy with 50x fewer parameters and <0.5MB model size"
+    <https://arxiv.org/abs/1602.07360>`_ paper.
 
-- Infer SqueezeNet with CIFAR-10 dataset
+    Get SqueezeNet neural network.
 
-```log
-'Top1_Accuracy': 83.62%  'Top5_Accuracy': 99.31%
+    Args:
+        num_classes (int): Class number.
+
+    Returns:
+        Cell, cell instance of SqueezeNet neural network.
+
+    Examples:
+        >>> net = SqueezeNet(10)
+    """
+    def __init__(self, num_classes=10):
+        super(SqueezeNet, self).__init__()
+
+        self.features = nn.SequentialCell([
+            nn.Conv2d(3,
+                      96,
+                      kernel_size=7,
+                      stride=2,
+                      pad_mode='valid',
+                      has_bias=True),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            Fire(96, 16, 64, 64),
+            Fire(128, 16, 64, 64),
+            Fire(128, 32, 128, 128),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            Fire(256, 32, 128, 128),
+            Fire(256, 48, 192, 192),
+            Fire(384, 48, 192, 192),
+            Fire(384, 64, 256, 256),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            Fire(512, 64, 256, 256),
+        ])
+
+        # Final convolution is initialized differently from the rest
+        self.final_conv = nn.Conv2d(512,
+                                    num_classes,
+                                    kernel_size=1,
+                                    has_bias=True)
+        self.dropout = nn.Dropout(keep_prob=0.5)
+        self.relu = nn.ReLU()
+        self.mean = P.ReduceMean(keep_dims=True)
+        self.flatten = nn.Flatten()
+        self.custom_init_weight()
+
+    def custom_init_weight(self):
+        """
+        Init the weight of Conv2d in the net.
+        """
+        for _, cell in self.cells_and_names():
+            if isinstance(cell, nn.Conv2d):
+                if cell is self.final_conv:
+                    cell.weight.set_data(
+                        weight_init.initializer('normal', cell.weight.shape,
+                                                cell.weight.dtype))
+                else:
+                    cell.weight.set_data(
+                        weight_init.initializer('he_uniform',
+                                                cell.weight.shape,
+                                                cell.weight.dtype))
+                if cell.bias is not None:
+                    cell.bias.set_data(
+                        weight_init.initializer('zeros', cell.bias.shape,
+                                                cell.bias.dtype))
+
+    def construct(self, x):
+        x = self.features(x)
+        x = self.dropout(x)
+        x = self.final_conv(x)
+        x = self.relu(x)
+        x = self.mean(x, (2, 3))
+        x = self.flatten(x)
+
+        return x
 ```
 
-- Infer SqueezeNet with ImageNet dataset
+### 测试模型输出的数据形状
 
-```log
-'Top1_Accuracy': 59.30%  'Top5_Accuracy': 81.40%
+```python
+net =  SqueezeNet(num_classes=10)
+uniform = ms.ops.UniformReal()
+input = uniform((32, 3, 224, 224)) 
+output = net(input)
+
+print(output.shape)
 ```
 
-- Infer SqueezeNet_Residual with CIFAR-10 dataset
+### 定义损失率
 
-```log
-'Top1_Accuracy': 87.28%  'Top5_Accuracy': 99.58%
+Squeezenet模型在训练过程中学习率lr随着训练步骤的增加逐渐减小，从而使得模型最后的分类准确度得到上升，下面定义了学习率的生成函数，主要定义了四种学习率的下降过程，分为线性和非线性，在调用函数时直接在lr_decay_mode输入不同的模式就可以得到不同的学习率数组， 四种模式分别是steps, poly, linear 和 cosine，我们以linear为例说明，在这个过程中学习率随着训练的进行，线性下降从lr_max下降到lr_end,实现了训练前期学习速度快，后期缓慢收敛，防止梯度在在最小值附件来回震荡
+
+```python
+import math
+import numpy as np
+
+
+def get_lr(lr_init, lr_end, lr_max, total_epochs, warmup_epochs,
+           pretrain_epochs, steps_per_epoch, lr_decay_mode):
+    """
+    generate learning rate array
+
+    Args:
+        lr_init(float): init learning rate
+        lr_end(float): end learning rate
+        lr_max(float): max learning rate
+        total_epochs(int): total epoch of training
+        warmup_epochs(int): number of warmup epochs
+        pretrain_epochs(int): number of pretrain epochs
+        steps_per_epoch(int): steps of one epoch
+        lr_decay_mode(string): learning rate decay mode,
+                               including steps, poly, linear or cosine
+    Returns:
+        np.array, learning rate array
+    """
+
+    lr_each_step = []
+    total_steps = steps_per_epoch * total_epochs
+    warmup_steps = steps_per_epoch * warmup_epochs
+    pretrain_steps = steps_per_epoch * pretrain_epochs
+    decay_steps = total_steps - warmup_steps
+
+    if lr_decay_mode == 'steps':
+        decay_epoch_index = [
+            0.3 * total_steps, 0.6 * total_steps, 0.8 * total_steps
+        ]
+        for i in range(total_steps):
+            if i < decay_epoch_index[0]:
+                lr = lr_max
+            elif i < decay_epoch_index[1]:
+                lr = lr_max * 0.1
+            elif i < decay_epoch_index[2]:
+                lr = lr_max * 0.01
+            else:
+                lr = lr_max * 0.001
+            lr_each_step.append(lr)
+
+    elif lr_decay_mode == 'poly':
+        for i in range(total_steps):
+            if i < warmup_steps:
+                lr = linear_warmup_lr(i, warmup_steps, lr_max, lr_init)
+            else:
+                base = (1.0 - (i - warmup_steps) / decay_steps)
+                lr = lr_max * base * base
+            lr_each_step.append(lr)
+
+    elif lr_decay_mode == 'linear':
+        for i in range(total_steps):
+            if i < warmup_steps:
+                lr = linear_warmup_lr(i, warmup_steps, lr_max, lr_init)
+            else:
+                lr = lr_max - (lr_max - lr_end) * (i -
+                                                   warmup_steps) / decay_steps
+            lr_each_step.append(lr)
+
+    elif lr_decay_mode == 'cosine':
+        for i in range(total_steps):
+            if i < warmup_steps:
+                lr = linear_warmup_lr(i, warmup_steps, lr_max, lr_init)
+            else:
+                linear_decay = (total_steps - i) / decay_steps
+                cosine_decay = 0.5 * (
+                    1 + math.cos(math.pi * 2 * 0.47 *
+                                 (i - warmup_steps) / decay_steps))
+                decayed = linear_decay * cosine_decay + 0.00001
+                lr = lr_max * decayed
+            lr_each_step.append(lr)
+
+    else:
+        raise NotImplementedError(
+            'Learning rate decay mode [{:s}] cannot be recognized'.format(
+                lr_decay_mode))
+
+    lr_each_step = np.array(lr_each_step).astype(np.float32)
+    learning_rate = lr_each_step[pretrain_steps:]
+
+    return learning_rate
+
+
+def linear_warmup_lr(current_step, warmup_steps, base_lr, init_lr):
+    lr_inc = (base_lr - init_lr) / warmup_steps
+    lr = init_lr + lr_inc * current_step
+    return lr
+
+lr = get_lr(lr_init=0,
+                lr_end=0,
+                lr_max=0.01,
+                total_epochs=30,
+                warmup_epochs=5,
+                pretrain_epochs=0,
+                steps_per_epoch=1562,
+                lr_decay_mode="linear")
+lr =Tensor(lr)
+
+# print(type(lr[2]))
+
+
+
 ```
 
-- Infer SqueezeNet_Residual with ImageNet dataset
+### 训练SqueezeNet模型
+设置epoch参数为30，训练集划分batch是每批32张图片，一共会有1562批次，可以看见在训练过程中损失率呈现下降趋势。
 
-```log
-'Top1_Accuracy': 60.82%  'Top5_Accuracy': 82.56%
+```python
+from mindspore.nn.optim.momentum import Momentum
+from mindspore.train.callback import ModelCheckpoint, CheckpointConfig, LossMonitor, TimeMonitor
+from mindspore.nn.loss import SoftmaxCrossEntropyWithLogits
+from mindspore.train.model import Model
+
+
+#保存模型
+config_ck = ms.CheckpointConfig(save_checkpoint_steps=1562, keep_checkpoint_max=10)
+
+ckpoint = ms.ModelCheckpoint(prefix="SqueezeNet", directory="./SqueezeNet2", config=config_ck)
+
+# loss = nn.SoftmaxCrossEntropyWithLogits(sparse=True)
+loss = SoftmaxCrossEntropyWithLogits(sparse=True, reduction='mean')
+#优化器
+# opt = nn.Momentum(net.trainable_params(), learning_rate=0.001, momentum=0.8)
+opt = Momentum(filter(lambda x: x.requires_grad, net.get_parameters()),
+                       lr,
+                       0.9,
+                     weight_decay=1e-4)
+model = Model(net, loss_fn=loss, optimizer=opt, metrics={'accuracy'})
+time_cb = TimeMonitor(data_size=step_size)
+loss_cb = LossMonitor()
+#训练模型
+model.train(30, dataset_train, callbacks=[ckpoint, time_cb,loss_cb])
+
 ```
 
-# [Model Description](#contents)
+### 模型评估
 
-## [Performance](#contents)
+在之前划分的测试集上面进行模型的评估，得到在测试集上的准确度
 
-### Evaluation Performance
+```python
+acc = model.eval(dataset_eval)
 
-#### SqueezeNet on CIFAR-10
-
-| Parameters                 | Ascend                                                      | GPU |
-| -------------------------- | ----------------------------------------------------------- | --- |
-| Model Version              | SqueezeNet                                                  | SqueezeNet |
-| Resource                   | Ascend 910; CPU 2.60GHz, 192cores; Memory 755G; OS Euler2.8 | NV SMX2 V100-32G |
-| uploaded Date              | 11/06/2020 (month/day/year)                                 | 8/26/2021 (month/day/year) |
-| MindSpore Version          | 1.0.0                                                       | 1.4.0 |
-| Dataset                    | CIFAR-10                                                    | CIFAR-10 |
-| Training Parameters        | epoch=120, steps=195, batch_size=32, lr=0.01                | 1pc:epoch=120, steps=1562, batch_size=32, lr=0.01; 8pcs:epoch=120, steps=1562, batch_size=4, lr=0.01|
-| Optimizer                  | Momentum                                                    | Momentum |
-| Loss Function              | Softmax Cross Entropy                                       | Softmax Cross Entropy |
-| outputs                    | probability                                                 | probability |
-| Loss                       | 0.0496                                                      | 1pc:0.0892, 8pcs:0.0130 |
-| Speed                      | 1pc: 16.7 ms/step;  8pcs: 17.0 ms/step                      | 1pc: 28.6 ms/step; 8pcs: 10.8 ms/step |
-| Total time                 | 1pc: 55.5 mins;  8pcs: 15.0 mins                            | 1pc: 90mins; 8pcs: 34mins |
-| Parameters (M)             | 4.8                                                         | 0.74 |
-| Checkpoint for Fine tuning | 6.4M (.ckpt file)                                           | 6.4M (.ckpt file)|
-| Scripts                    | [squeezenet script](https://gitee.com/mindspore/models/tree/r1.9/official/cv/squeezenet) | [squeezenet script](https://gitee.com/mindspore/models/tree/r1.9/official/cv/squeezenet) |
-
-#### SqueezeNet on ImageNet
-
-| Parameters                 | Ascend                                                      | GPU |
-| -------------------------- | ----------------------------------------------------------- | --- |
-| Model Version              | SqueezeNet                                                  | SqueezeNet |
-| Resource                   | Ascend 910; CPU 2.60GHz, 192cores; Memory 755G; OS Euler2.8 | NV SMX2 V100-32G |
-| uploaded Date              | 11/06/2020 (month/day/year)                                 | 8/26/2021 (month/day/year) |
-| MindSpore Version          | 1.0.0                                                       | 1.4.0 |
-| Dataset                    | ImageNet                                                    | ImageNet |
-| Training Parameters        | epoch=200, steps=5004, batch_size=32, lr=0.01               | epoch=200, steps=5004, batch_size=32, lr=0.01 |
-| Optimizer                  | Momentum                                                    | Momentum |
-| Loss Function              | Softmax Cross Entropy                                       | Softmax Cross Entropy |
-| outputs                    | probability                                                 | probability |
-| Loss                       | 2.9150                                                      | 3.009 |
-| Speed                      | 8pcs: 19.9 ms/step                                          | 8pcs: 43.5ms/step|
-| Total time                 | 8pcs: 5.2 hours                                             | 8pcs: 12.1 hours |
-| Parameters (M)             | 4.8                                                         | 1.25 |
-| Checkpoint for Fine tuning | 13.3M (.ckpt file)                                          | 13.3M (.ckpt file) |
-| Scripts                    | [squeezenet script](https://gitee.com/mindspore/models/tree/r1.9/official/cv/squeezenet) | [squeezenet script](https://gitee.com/mindspore/models/tree/r1.9/official/cv/squeezenet) |
-
-#### SqueezeNet_Residual on CIFAR-10
-
-| Parameters                 | Ascend                                                      | GPU |
-| -------------------------- | ----------------------------------------------------------- | --- |
-| Model Version              | SqueezeNet_Residual                                         | SqueezeNet_Residual |
-| Resource                   |  Ascend 910; CPU 2.60GHz, 192cores; Memory 755G; OS Euler2.8 | NV SMX2 V100-32G |
-| uploaded Date              | 11/06/2020 (month/day/year)                                 | 8/26/2021 (month/day/year) |
-| MindSpore Version          | 1.0.0                                                       | 1.4.0 |
-| Dataset                    | CIFAR-10                                                    | CIFAR-10 |
-| Training Parameters        | epoch=150, steps=195, batch_size=32, lr=0.01                | 1pc:epoch=150, steps=1562, batch_size=32, lr=0.01; 8pcs: epoch=150, steps=1562, batch_size=4|
-| Optimizer                  | Momentum                                                    | Momentum
-| Loss Function              | Softmax Cross Entropy                                       | Softmax Cross Entropy
-| outputs                    | probability                                                 | probability
-| Loss                       | 0.0641                                                      | 1pc: 0.0402; 8pcs:0.004 |
-| Speed                      | 1pc: 16.9 ms/step;  8pcs: 17.3 ms/step                      | 1pc: 29.4 ms/step; 8pcs:11.0 ms/step |
-| Total time                 | 1pc: 68.6 mins;  8pcs: 20.9 mins                            | 1pc: 115 mins; 8pcs: 43.5 mins |
-| Parameters (M)             | 4.8                                                         | 0.74 |
-| Checkpoint for Fine tuning | 6.5M (.ckpt file)                                           | 6.5M (.ckpt file) |
-| Scripts                    | [squeezenet script](https://gitee.com/mindspore/models/tree/r1.9/official/cv/squeezenet) | [squeezenet script](https://gitee.com/mindspore/models/tree/r1.9/official/cv/squeezenet) |
-
-#### SqueezeNet_Residual on ImageNet
-
-| Parameters                 | Ascend                                                      | GPU |
-| -------------------------- | ----------------------------------------------------------- | --- |
-| Model Version              | SqueezeNet_Residual                                         | SqueezeNet_Residual |
-| Resource                   | Ascend 910; CPU 2.60GHz, 192cores; Memory 755G; OS Euler2.8 | NV SMX2 V100-32G |
-| uploaded Date              | 11/06/2020 (month/day/year)                                 | 8/26/2021 (month/day/year) |
-| MindSpore Version          | 1.0.0                                                       | 1.4.0 |
-| Dataset                    | ImageNet                                                    | ImageNet |
-| Training Parameters        | epoch=300, steps=5004, batch_size=32, lr=0.01               | epoch=300, steps=5004, batch_size=32, lr=0.01 |
-| Optimizer                  | Momentum                                                    | Momentum |
-| Loss Function              | Softmax Cross Entropy                                       | Softmax Cross Entropy |
-| outputs                    | probability                                                 | probability |
-| Loss                       | 2.9040                                                      | 2.969 |
-| Speed                      | 8pcs: 20.2 ms/step                                          | 8pcs: 44.1 ms/step |
-| Total time                 | 8pcs: 8.0 hours                                             | 8pcs: 18.4 hours |
-| Parameters (M)             | 4.8                                                         | 1.25 |
-| Checkpoint for Fine tuning | 15.3M (.ckpt file)                                          | 15.3M (.ckpt file) |
-| Scripts                    | [squeezenet script](https://gitee.com/mindspore/models/tree/r1.9/official/cv/squeezenet) | [squeezenet script](https://gitee.com/mindspore/models/tree/r1.9/official/cv/squeezenet) |
-
-### Inference Performance
-
-#### SqueezeNet on CIFAR-10
-
-| Parameters          | Ascend                      | GPU |
-| ------------------- | --------------------------- | --- |
-| Model Version       | SqueezeNet                  | SqueezeNet |
-| Resource            | Ascend 910; OS Euler2.8     | NV SMX2 V100-32G |
-| Uploaded Date       | 11/06/2020 (month/day/year) | 8/26/2021 (month/day/year) |
-| MindSpore Version   | 1.0.0                       | 1.4.0 |
-| Dataset             | CIFAR-10                    | CIFAR-10 |
-| batch_size          | 32                          | 1pc:32; 8pcs:4 |
-| outputs             | probability                 | probability |
-| Accuracy            | 1pc: 89.0%;  8pcs: 82%    | 1pc: 89.0%; 8pcs: 88%|
-
-#### SqueezeNet on ImageNet
-
-| Parameters          | Ascend                      | GPU |
-| ------------------- | --------------------------- | --- |
-| Model Version       | SqueezeNet                  | SqueezeNet |
-| Resource            | Ascend 910; OS Euler2.8                 | NV SMX2 V100-32G |
-| Uploaded Date       | 11/06/2020 (month/day/year) | 8/26/2021 (month/day/year) |
-| MindSpore Version   | 1.0.0                       | 1.4.0 |
-| Dataset             | ImageNet                    | ImageNet |
-| batch_size          | 32                          |  32 |
-| outputs             | probability                 | probability |
-| Accuracy            | 8pcs: 57.5%(TOP1), 81.1%(TOP5)       | 8pcs: 57.5%(TOP1), 80.7%(TOP5) |
-
-#### SqueezeNet_Residual on CIFAR-10
-
-| Parameters          | Ascend                      |  GPU |
-| ------------------- | --------------------------- | --- |
-| Model Version       | SqueezeNet_Residual         | SqueezeNet_Residual         |
-| Resource            | Ascend 910; OS Euler2.8             | NV SMX2 V100-32G |
-| Uploaded Date       | 11/06/2020 (month/day/year) | 8/26/2021 (month/day/year) |
-| MindSpore Version   | 1.0.0                       | 1.4.0 |
-| Dataset             | CIFAR-10                    | CIFAR-10                    |
-| batch_size          | 32                          | 1pc:32; 8pcs:4 |
-| outputs             | probability                 | probability                 |
-| Accuracy            | 1pc: 90.8%;  8pcs: 86.43%   | 1pc: 90.7%; 8pcs: 90.5% |
-
-#### SqueezeNet_Residual on ImageNet
-
-| Parameters          | Ascend                      | GPU |
-| ------------------- | --------------------------- | --- |
-| Model Version       | SqueezeNet_Residual         | SqueezeNet_Residual         |
-| Resource            | Ascend 910; OS Euler2.8               |  NV SMX2 V100-32G |
-| Uploaded Date       | 11/06/2020 (month/day/year) | 8/24/2021 (month/day/year) |
-| MindSpore Version   | 1.0.0                       | 1.4.0 |
-| Dataset             | ImageNet                    | ImageNet                   |
-| batch_size          | 32                          | 32 |
-| outputs             | probability                 | probability |
-| Accuracy            | 8pcs: 60.4%(TOP1), 82.5%(TOP5)       | 8pcs: 60.2%(TOP1), 82.3%(TOP5)|
-
-### 310 Inference Performance
-
-#### SqueezeNet on CIFAR-10
-
-| Parameters          | Ascend                      |
-| ------------------- | --------------------------- |
-| Model Version       | SqueezeNet                  |
-| Resource            | Ascend 310; OS Euler2.8     |
-| Uploaded Date       | 27/05/2021 (month/day/year) |
-| MindSpore Version   | 1.2.0                       |
-| Dataset             | CIFAR-10                    |
-| batch_size          | 1                           |
-| outputs             | Accuracy                    |
-| Accuracy            | TOP1: 83.62%, TOP5: 99.31%  |
-
-#### SqueezeNet on ImageNet
-
-| Parameters          | Ascend                      |
-| ------------------- | --------------------------- |
-| Model Version       | SqueezeNet                  |
-| Resource            | Ascend 310; OS Euler2.8                 |
-| Uploaded Date       | 27/05/2020 (month/day/year) |
-| MindSpore Version   | 1.2.0                       |
-| Dataset             | ImageNet                    |
-| batch_size          | 1                           |
-| outputs             | Accuracy                    |
-| Accuracy            | TOP1: 59.30%, TOP5: 81.40%  |
-
-#### SqueezeNet_Residual on CIFAR-10
-
-| Parameters          | Ascend                      |
-| ------------------- | --------------------------- |
-| Model Version       | SqueezeNet_Residual         |
-| Resource            | Ascend 310; OS Euler2.8             |
-| Uploaded Date       | 27/05/2020 (month/day/year) |
-| MindSpore Version   | 1.2.0                       |
-| Dataset             | CIFAR-10                    |
-| batch_size          | 1                           |
-| outputs             | Accuracy                    |
-| Accuracy            | TOP1: 87.28%, TOP5: 99.58%  |
-
-#### SqueezeNet_Residual on ImageNet
-
-| Parameters          | Ascend                      |
-| ------------------- | --------------------------- |
-| Model Version       | SqueezeNet_Residual         |
-| Resource            | Ascend 310; OS Euler2.8               |
-| Uploaded Date       | 27/05/2020 (month/day/year) |
-| MindSpore Version   | 1.2.0                       |
-| Dataset             | ImageNet                    |
-| batch_size          | 1                           |
-| outputs             | Accuracy                    |
-| Accuracy            | TOP1: 60.82%, TOP5: 82.56%  |
-
-## [How to use](#contents)
-
-### Inference
-
-If you need to use the trained model to perform inference on multiple hardware platforms, such as GPU, Ascend 910 or Ascend 310, you can refer to this [Link](https://www.mindspore.cn/tutorials/experts/en/r1.9/infer/inference.html). Following the steps below, this is a simple example:
-
-- Running on Ascend
-
-  ```py
-  # Set context
-  device_id = int(os.getenv('DEVICE_ID'))
-  context.set_context(mode=context.GRAPH_MODE,
-                      device_target=Ascend,
-                      device_id=device_id)
-
-  # Load unseen dataset for inference
-  dataset = create_dataset(dataset_path=config.data_path,
-                           do_train=False,
-                           batch_size=config.batch_size,
-                           target=Ascend)
-
-  # Define model
-  net = squeezenet(num_classes=config.class_num)
-  loss = nn.SoftmaxCrossEntropyWithLogits(sparse=True, reduction='mean')
-  model = Model(net,
-                loss_fn=loss,
-                metrics={'top_1_accuracy', 'top_5_accuracy'})
-
-  # Load pre-trained model
-  param_dict = load_checkpoint(config.checkpoint_file_path)
-  load_param_into_net(net, param_dict)
-  net.set_train(False)
-
-  # Make predictions on the unseen dataset
-  acc = model.eval(dataset)
-  print("accuracy: ", acc)
-  ```
-
-### Continue Training on the Pretrained Model
-
-- running on Ascend
-
-  ```py
-  # Load dataset
-  dataset = create_dataset(dataset_path=config.data_path,
-                           do_train=True,
-                           repeat_num=1,
-                           batch_size=config.batch_size,
-                           target=Ascend)
-  step_size = dataset.get_dataset_size()
-
-  # define net
-  net = squeezenet(num_classes=config.class_num)
-
-  # load checkpoint
-  if config.pre_trained:
-      param_dict = load_checkpoint(config.pre_trained)
-      load_param_into_net(net, param_dict)
-
-  # init lr
-  lr = get_lr(lr_init=config.lr_init,
-              lr_end=config.lr_end,
-              lr_max=config.lr_max,
-              total_epochs=config.epoch_size,
-              warmup_epochs=config.warmup_epochs,
-              pretrain_epochs=config.pretrain_epoch_size,
-              steps_per_epoch=step_size,
-              lr_decay_mode=config.lr_decay_mode)
-  lr = Tensor(lr)
-  loss = SoftmaxCrossEntropyWithLogits(sparse=True, reduction='mean')
-  loss_scale = FixedLossScaleManager(config.loss_scale,
-                                     drop_overflow_update=False)
-  opt = Momentum(filter(lambda x: x.requires_grad, net.get_parameters()),
-                 lr,
-                 config.momentum,
-                 config.weight_decay,
-                 config.loss_scale,
-                 use_nesterov=True)
-  model = Model(net,
-                loss_fn=loss,
-                optimizer=opt,
-                loss_scale_manager=loss_scale,
-                metrics={'acc'},
-                amp_level="O2",
-                keep_batchnorm_fp32=False)
-
-  # Set callbacks
-  config_ck = CheckpointConfig(
-      save_checkpoint_steps=config.save_checkpoint_epochs * step_size,
-      keep_checkpoint_max=config.keep_checkpoint_max)
-  time_cb = TimeMonitor(data_size=step_size)
-  ckpt_cb = ModelCheckpoint(prefix=config.net_name + '_' + config.dataset,
-                            directory=ckpt_save_dir,
-                            config=config_ck)
-  loss_cb = LossMonitor()
-
-  # Start training
-  model.train(config.epoch_size - config.pretrain_epoch_size, dataset,
-              callbacks=[time_cb, ckpt_cb, loss_cb])
-  print("train success")
-  ```
-
-### Transfer Learning
-
-#### Dataset process
-
-1. Download flower dataset([link](https://storage.googleapis.com/download.tensorflow.org/example_images/flower_photos.tgz)) and unzip it.
-2. move script splitting transfer learning dataset(`data_split.py`) into `flower_photos/` directory.
-3. run `python data_split.py`, folder `train` and `test` will be generated in `flower_photos/`.
-
-#### Quick Start
-
-```bash
-python quick_start.py --train_url=[FLOWER_DATASET_PATH] --pre_trained=[CKPT_PATH] --config_path=./squeezenet_cpu_config.yaml
+print("{}".format(acc))
 ```
 
-#### Training Process
+### 保存模型
+调用mindspore的save_checkpoint可以保存训练好的SqueezeNet模型，下面保存模型在根目录，并取名为
+squeezenet.ckpt
 
-##### Running on CPU
-
-```bash
-# transfer training example and eval example
-Usage: python finetune.py --train_url=[FLOWER_DATASET_PATH] --pre_trained=[PRETRAINED_CKPT_PATH] --config_path=./squeezenet_cpu_config.yaml
- ```
-
-##### Running on GPU
-
-```bash
-# transfer training example and eval example
-Usage: python finetune.py --train_url=[FLOWER_DATASET_PATH] --pre_trained=[PRETRAINED_CKPT_PATH] --config_path=./squeezenet_cpu_config.yaml
+```python
+# Save checkpoint
+import mindspore
+mindspore.save_checkpoint(net, "squeezenet.ckpt")
+print("Saved Model to squeezenet")
 ```
 
-#### Result
+### 可视化模型
 
-- finetune SqueezeNet with flower dataset
+调用之前训练好的模型进行预测，并且将预测结果可视化出来，红色的图片代表是预测错误的图片，蓝色的图片代表是预测正确的图片。图片的标题为SqueezeNet预测的图片所属类型的结果。
 
-- finetune result log:
+```python
+from mindspore.train import Model
+from mindspore import load_checkpoint, load_param_into_net
 
-```log
-epoch: 1 step: 1, loss is 1.619088888168335
-epoch: 1 step: 2, loss is 1.4574248790740967
-epoch: 1 step: 3, loss is 1.3140548467636108
-epoch: 1 step: 4, loss is 1.1410305500030518
-epoch: 1 step: 5, loss is 0.9972432851791382
-...
+# define visualize_model()，visualize model prediction
+def visualize_model(best_ckpt_path, val_ds):
+    network = SqueezeNet(10)
+    # load model parameters
+    param_dict = load_checkpoint(best_ckpt_path)
+    load_param_into_net(network, param_dict)
+    model = Model(network)
+    # load the data of the validation set for validation
+    data = next(val_ds.create_dict_iterator())
+    images = data["image"].asnumpy()
+    labels = data["label"].asnumpy()
+    print(labels)
+    class_name = {0: "airplane", 1: "automobile", 2: "bird", 3: "cat", 4: "deer",5:"dog",6:"frog",7:"horse",8:"ship",9:"truck"}
+    # prediction image category
+    output = model.predict(Tensor(data['image']))
+    # print(output.shape)
+    pred = np.argmax(output.asnumpy(), axis=1)
+    # print(pred.shape)
+    print(pred)
+
+    # display the image and the predicted value of the image
+    plt.figure(figsize=(15, 7))
+    for i in range(0,32):
+        plt.subplot(4, 8, i + 1)
+        # if the prediction is correct, it is displayed in blue; if the prediction is wrong, it is displayed in red
+        color = 'blue' if pred[i] == labels[i] else 'red'
+        plt.title('predict:{}'.format(class_name[pred[i]]), color=color)
+        picture_show = np.transpose(images[i], (1, 2, 0))
+        mean = np.array([0.485, 0.456, 0.406])
+        std = np.array([0.229, 0.224, 0.225])
+        picture_show = std * picture_show + mean
+        picture_show = np.clip(picture_show, 0, 1)
+        plt.imshow(picture_show)
+        plt.axis('off')
+
+    plt.show()
+
+
+# the best ckpt file obtained by model tuning is used to predict the images of the validation set
+# (need to go to cpu_default_config.yaml set ckpt_path as the best ckpt file path）
+# visualize_model("./SqueezeNet/SqueezeNet_4-2_1562.ckpt", dataset_eval)
+visualize_model("./squeezenet.ckpt", dataset_eval)
 ```
 
-#### Evaluation Process
+运行的结果如图所示：
 
-```bash
-# transfer eval example
-Usage: python eval.py --net_name=finetune --device_target=CPU --data_path=[FLOWER_TEST_DATASET_PATH] --checkpoint_file_path=[CKPT_PATH] --config_path=./squeezenet_cpu_config.yaml
- ```
+<div align=center>
 
-#### Result
+<img src="https://636c-cloud1-3gypehkveda97589-1311160254.tcb.qcloud.la/squeezenet%E5%9B%BE%E7%89%87/QQ%E5%9B%BE%E7%89%8720221108213111.jpg?sign=7e9c49191801159551875debd3a0a103&t=1667914336" width=60%  />
 
-- Evaluation SqueezeNet with flower test dataset
+</div>
 
-- Evaluation process log:
+## 
 
-```log
-result: {'top_1_accuracy': 0.94921875, 'top_5_accuracy': 1.0} ckpt= .\squeezenet_finetune_flowerset_1-200_11.ckpt
-...
-```
+## 总结
 
-#### Parameters Setting
-
-| Parameters                 | Contents                              |
-| -------------------------- |---------------------------------------|
-| Model Version              | SqueezeNet                            |
-| Resource                   | CPU 2.60GHz, 6cores; Memory 16G;   |
-| uploaded Date              | 12/08/2022 (month/day/year)           |
-| MindSpore Version          | 1.8.0                                 |
-| Dataset                    | Flower dataset                        |
-| Training Parameters        | epoch=200, steps=2200, batch_size=256, lr=0.01 |
-| Optimizer                  | Momentum                              |
-| Loss Function              | Softmax Cross Entropy                 |
-| outputs                    | probability                           |
-| Loss                       | 0.6812986731529236                    |
-| Speed(CPU)                 | 3803.792 ms/step;                     |
-| Total time(CPU)            | 2.3 hours                             |
-| Parameters                 | 723K                                   |
-| Checkpoint for Fine tuning | 2.83M (.ckpt)                         |
-
-# [Description of Random Situation](#contents)
-
-In dataset.py, we set the seed inside “create_dataset" function. We also use random seed in train.py.
-
-# [ModelZoo Homepage](#contents)
-
- Please check the official [homepage](https://gitee.com/mindspore/models).
+本案例使用MindSpore框架实现了SqueezeNet训练CIFAR10数据集并且评估模型的完整过程，包括数据集的下载和处理，模型的搭建，模型的训练，以及模型的测试评估和保存，最后我们可视化了模型的预测效果，通过次案例我们可以对SqueezeNet的原理有更加深刻的了解，并且更加熟悉MindSpore框架的基本使用方法。
